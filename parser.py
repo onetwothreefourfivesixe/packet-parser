@@ -2,6 +2,7 @@ import json
 import os
 import regex
 import time
+import math
 
 has_category_tags = False
 
@@ -20,7 +21,8 @@ with open('stop_words.txt') as f:
     stop_words = set(f.readlines())
     stop_words = set([word.strip() for word in stop_words])
 
-
+num_tossups = 0
+num_bonuses = 0
 all_questions = []
 for (dirpath, dirnames, filenames) in os.walk('packets_classify'):
     for filename in filenames:
@@ -36,7 +38,13 @@ for (dirpath, dirnames, filenames) in os.walk('packets_classify'):
             continue
 
         all_questions.append(data)
+        if 'tossups' in data:
+            num_tossups += len(data['tossups'])
+        if 'bonuses' in data:
+            num_bonuses += len(data['bonuses'])
 
+print(num_tossups)
+print(num_bonuses)
 
 def removePunctuation(s, punctuation='''.,!-;:'"\/?@#$%^&*_~'''):
     return ''.join(ch for ch in s if ch not in punctuation)
@@ -71,35 +79,82 @@ def difference(text1, text2):
     return count
 
 
-def classify_question(text, is_tossup, max_number_to_check=100000):
+def classify_question(text, is_tossup):
     i = 0
     text = set(text.split())
     text = set([removePunctuation(word).lower() for word in text])
     text = set([word for word in text if word not in stop_words])
 
-    best_questions = []
+    idfs = {word: 0 for word in text}
+
+    best_question = {}
+    best_overall_score = 0
     for data in all_questions:
-        # 1 nearest neighbor LOL
         if is_tossup:
-            if len(data['tossups']) > 0:
-                best_questions.append(max(data['tossups'], key=lambda x: 0 if 'subcategory' not in x else difference(x['question'], text)))
+            if len(data['tossups']) == 0: continue
+            for word in text:
+                for tossup in data['tossups']:
+                    if word in tossup['question']:
+                        idfs[word] += 1
 
-            i += len(data['tossups'])
         elif 'bonuses' in data:
-            if len(data['bonuses']) > 0:
-                best_questions.append(max(data['bonuses'], key=lambda x: 0 if 'subcategory' not in x else difference(x['leadin'], text)))
+            if len(data['bonuses']) == 0: continue
 
-            i += len(data['bonuses'])
-
-        if i > max_number_to_check:
-            break
+            for word in text:
+                for bonus in data['bonuses']:
+                    if word in bonus['leadin']:
+                        idfs[word] += 1
     
     if is_tossup:
-        best = max(best_questions, key=lambda x: difference(x['question'], text))
+        for word in idfs:
+            idfs[word] = 0 if idfs[word] == 0 else math.log(num_tossups / idfs[word])
     else:
-        best = max(best_questions, key=lambda x: difference(x['leadin'], text))
+        for word in idfs:
+            idfs[word] = 0 if idfs[word] == 0 else math.log(num_bonuses / idfs[word])
+    
+    for data in all_questions:
+        if is_tossup:
+            best_score = 0
+            best_tu = {}
+            if len(data['tossups']) == 0: continue
+            for tossup in data['tossups']:
+                if 'subcategory' not in tossup:
+                    continue
+                score = 0
+                for word in tossup['question']:
+                    if word in idfs:
+                        score += idfs[word]
+                
+                if score > best_score:
+                    best_score = score
+                    best_tu = tossup
 
-    return best['category'], best['subcategory']
+            if best_score > best_overall_score:
+                best_question = best_tu
+                best_overall_score = best_score
+
+        elif 'bonuses' in data:
+            if len(data['bonuses']) == 0: continue
+
+            best_score = 0
+            best_bonus = {}
+            for bonus in data['bonuses']:
+                if 'subcategory' not in bonus:
+                    continue
+                score = 0
+                for word in bonus['leadin']:
+                    if word in idfs:
+                        score += idfs[word]
+                
+                if score > best_score:
+                    best_score = score
+                    best_bonus = bonus
+            
+            if best_score > best_overall_score:
+                best_question = best_bonus
+                best_overall_score = best_score
+
+    return best_question['category'], best_question['subcategory'], best_question
 
 
 for file in os.listdir(input_directory):
@@ -188,14 +243,14 @@ for file in os.listdir(input_directory):
 
     if not has_category_tags:
         for bonus in data['bonuses']:
-            category, subcategory = classify_question(bonus['leadin'] + bonus['parts'][0] + bonus['parts'][1] + bonus['parts'][2], is_tossup=False)
+            category, subcategory, question = classify_question(bonus['leadin'] + bonus['parts'][0] + bonus['parts'][1] + bonus['parts'][2], is_tossup=False)
             bonus['category'] = category
             bonus['subcategory'] = subcategory
 
             print(category, subcategory)
 
         for tossup in data['tossups']:
-            category, subcategory = classify_question(tossup['question'], is_tossup=True)
+            category, subcategory, question = classify_question(tossup['question'], is_tossup=True)
             tossup['category'] = category
             tossup['subcategory'] = subcategory
 
