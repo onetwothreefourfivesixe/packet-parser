@@ -37,19 +37,21 @@ def main():
         basename = file_path.name
         
         if file_type == "pdf":
-            # Import only when needed
-            
             docx_path = file_path.with_suffix('.docx')
             pdf_to_docx.convert(str(file_path))
             text_content = docx_to_txt.convert(str(docx_path))
             
             output_path = Path("packets") / basename.replace('.pdf', '.txt')
-            output_path.write_text(text_content)
+            # Remove U+202D characters and handle other unrecognized chars
+            text_content = text_content.encode('utf-8', errors='replace').decode('utf-8')
+            text_content = text_content.replace('\u202D', '').replace('\u202C', '').replace('�', ' ')
+            output_path.write_text(text_content, encoding='utf-8')
             
         elif file_type == "docx":
             text_content = docx_to_txt.convert(str(file_path))
             output_path = Path("packets") / basename.replace('.docx', '.txt')
-            output_path.write_text(text_content)
+            # Write with UTF-8 encoding
+            output_path.write_text(text_content, encoding='utf-8', errors='replace')
             
         elif file_type == "txt":
             output_path = Path("packets") / basename

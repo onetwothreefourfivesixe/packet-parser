@@ -1,6 +1,7 @@
 setuptools>=72.1.0
 click>=8.1.7
 docx>=0.2.4
+gdown>=5.2.0
 numpy>=2.0.1
 pdf2docx>=0.5.5
 regex>=2023.8.8
