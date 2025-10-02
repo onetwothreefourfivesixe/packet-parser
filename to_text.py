@@ -4,11 +4,11 @@ from pathlib import Path
 from modules import pdf_to_docx
 from modules import docx_to_txt
 
-def get_file_type():
+def get_file_type(type='p'):
     file_type = os.getenv('TYPE')
     if not file_type:
         while True:
-            file_type = input("File type (p = pdf, d = docx, c = doc, t = txt): ").lower()
+            file_type = type #input("File type (p = pdf, d = docx, c = doc, t = txt): ").lower()
             if file_type in ['p', 'pdf']:
                 return 'pdf'
             elif file_type in ['d', 'docx']:
@@ -20,8 +20,8 @@ def get_file_type():
             print("Invalid file type")
     return file_type
 
-def main():
-    file_type = get_file_type()
+def convertFile(type='p'):
+    file_type = get_file_type(type)
     print(f"Parsing {file_type} to text...")
     
     # Create packets directory if it doesn't exist
@@ -58,6 +58,4 @@ def main():
             file_path.rename(output_path)
     
     print(f"Parsed {counter} {file_type}s.")
-
-if __name__ == "__main__":
-    main()
+    return True

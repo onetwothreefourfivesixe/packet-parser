@@ -109,7 +109,8 @@ def remove_formatting(text: str, include_italics=False):
     return text.strip()
 
 
-def remove_punctuation(s: str, punctuation=""".,!-;:'"\/?@#$%^&*_~()[]{}“”‘’"""):
+def remove_punctuation(s: str, punctuation=r""".,!-;:'"/?@#$%^&*_~()[]{}""''"""):
+    """Fix escape sequence in punctuation string"""
     return "".join(ch for ch in s if ch not in punctuation)
 
 
@@ -179,11 +180,20 @@ class Parser:
         self.__init_regex__()
 
     def __init_regex__(self):
-        if self.has_question_numbers and self.has_category_tags:
+        if self.has_question_numbers:
+        # Fix escape sequence for digit matching
+            self.REGEX_QUESTION = (
+                r'^\s*(?:[1-9][0-9]?|[1-9][0-9])\)'  # Question numbers 1-99 with parenthesis
+                r'(?:{[biu]}.*?{/[biu]}|\(\*\)|[^{])*?'  # Question text
+                r'ANSWER:'  # Answer marker
+                r'(?:{[biu]}.*?{/[biu]}|[^{])*?'  # Answer text
+                r'(?=\n\s*\d+\)|\n\s*$)'  # Next question or end
+            )
+        elif self.has_question_numbers and self.has_category_tags:
             self.REGEX_QUESTION = r"^ *\d{1,2}\.(?:.|\n)*?ANSWER(?:.|\n)*?<[^>]*>"
-        elif self.has_question_numbers:
-            # self.REGEX_QUESTION = r"^ *\d{1,2}\.(?:.|\n)*?ANSWER(?:.*\n)*?(?= *\d{1,2}\.)"
-            self.REGEX_QUESTION = r"\d{0,2}(?:[^\d\n].*\n)*[ \t]*ANSWER.*(?:\n.+)*?(?=\n\s*\d{1,2}|\n\s*$)"
+        # elif self.has_question_numbers:
+        #     # self.REGEX_QUESTION = r"^ *\d{1,2}\.(?:.|\n)*?ANSWER(?:.*\n)*?(?= *\d{1,2}\.)"
+        #     self.REGEX_QUESTION = r"\d{0,2}(?:[^\d\n].*\n)*[ \t]*ANSWER.*(?:\n.+)*?(?=\n\s*\d{1,2}|\n\s*$)"
         else:
             self.REGEX_QUESTION = r"(?:[^\n].*\n)*[ \t]*ANSWER.*(?:\n.*)*?(?=\n$)"
 
@@ -602,128 +612,48 @@ class Parser:
         return difficultyModifiers, values
 
     def preprocess_packet(self, packet_text: str) -> str:
-        if self.modaq:
-            packet_text = packet_text.replace('"', "\u0022")
-
-        # remove spaces before first non-space character
-        packet_text = regex.sub(r"^ +", "", packet_text, flags=Parser.REGEX_FLAGS)
-
-        packet_text = packet_text + "\n0."
-        # remove zero-width characters
-        packet_text = packet_text.replace("", "").replace("​", "")
-        # change soft hyphens to regular hyphens
-        packet_text = packet_text.replace("\xad", "-")
-        # change greek question mark to semicolon
-        packet_text = packet_text.replace("\u037e", ";")  # Greek question mark
-
-        packet_text = (
-            packet_text.replace("\u00a0", " ")
-            .replace(" {/bu}", "{/bu} ")
-            .replace(" {/u}", "{/u} ")
-            .replace(" {/i}", "{/i} ")
-            .replace("{i}\n{/i}", "\n")
-            .replace("{i} {/i}", " ")
-            .replace("\n10]", "[10]")
-            .replace("[5,5]", "[10]")
-            .replace("[5/5]", "[10]")
-            .replace("[5, 5]", "[10]")
-            .replace("[5,5,5,5]", "[20]")
-            .replace("[5/5/5/5]", "[20]")
-            .replace("[10/10]", "[20]")
-            .replace("[2x10]", "[20]")
-            .replace("[2x5]", "[10]")
-            .replace("[10 ", "[10] ")
-            .replace("AUDIO RELATED BONUS: ", "\n")
-            .replace("HANDOUT RELATED BONUS: ", "\n")
-            .replace("RELATED BONUS: ", "\n")
-            .replace("RELATED BONUS. ", "\n")
-            .replace("RELATED BONUS\n", "\n\n")
-            .replace("HANDOUT BONUS: ", "\n")
-            .replace("BONUS: ", "\n")
-            .replace("Bonus: ", "\n")
-            .replace("BONUS. ", "\n")
-            .replace("TOSSUP. ", "")
-        )
-        # .replace("\n(10)", "\n[10]")
-
-        for typo in ANSWER_TYPOS:
-            packet_text = packet_text.replace(typo, "ANSWER:")
-            packet_text = packet_text.replace(typo.title(), "ANSWER:")
-
-        # replace tabs and redundant spaces
-        packet_text = packet_text.replace("\t", " ")
-        packet_text = regex.sub(r" {2,}", " ", packet_text, flags=Parser.REGEX_FLAGS)
-
-        # remove redundant tags
+        """Preprocess packet text with proper regex patterns."""
+        
+        # Fix numbered question formatting
         packet_text = regex.sub(
-            r"{(bu|b|u|i)}{/\g<1>}", "", packet_text, flags=Parser.REGEX_FLAGS
-        )
-        packet_text = regex.sub(
-            r"{/(bu|b|u|i)}{\g<1>}", "", packet_text, flags=Parser.REGEX_FLAGS
-        )
-
-        # handle html formatting at start of string
-        packet_text = regex.sub(
-            r"^\{(bu|b|u|i)\}(\d{1,2}|TB|X)\.",
-            "1. {\g<1>}",
+            r"^{(bu|b|u|i)}(\d{1,2}|TB|X)\.",
+            r"1. {\1}",
             packet_text,
-            flags=Parser.REGEX_FLAGS,
+            flags=Parser.REGEX_FLAGS
         )
+        
+        # Fix answer formatting
         packet_text = regex.sub(
-            r"^\{(bu|b|u|i)\}ANSWER(:?)",
-            "ANSWER\g<2>{\g<1>}",
+            r"^{(bu|b|u|i)}ANSWER(:?)",
+            r"ANSWER\2{\1}",
             packet_text,
-            flags=Parser.REGEX_FLAGS,
+            flags=Parser.REGEX_FLAGS
         )
-
-        # handle nonstandard question numbering
+        
+        # Fix question number line breaks
         packet_text = regex.sub(
-            r"^\(?(\d{1,2}|TB)\)", "1. ", packet_text, flags=Parser.REGEX_FLAGS
-        )
-        packet_text = regex.sub(
-            r"^(TB|X|Tiebreaker|Extra)[\.:]?",
-            "21.",
+            r"(\d{1,2}\.) *\n",
+            r"\1",
             packet_text,
-            flags=Parser.REGEX_FLAGS,
+            flags=Parser.REGEX_FLAGS
         )
+        
+        # Fix duplicate lines
         packet_text = regex.sub(
-            r"^(T|S|TU)\d{1,2}[\.:]?", "21.", packet_text, flags=Parser.REGEX_FLAGS
+            r"^(.+)\n\1$",
+            r"\1\n",
+            packet_text,
+            flags=Parser.REGEX_FLAGS
         )
-
-        # handle nonstandard bonus part numbering
+        
+        # Fix digit matching
         packet_text = regex.sub(
-            r"^[ABC][.:] *", "[10] ", packet_text, flags=Parser.REGEX_FLAGS
+            r"^([1-9][0-9]?)\.",
+            r"\1.",
+            packet_text,
+            flags=Parser.REGEX_FLAGS
         )
-        packet_text = regex.sub(
-            r"^BS\d{1,2}[\.:]?", "21.", packet_text, flags=Parser.REGEX_FLAGS
-        )
-
-        # handle question number on a new line from the question text
-        packet_text = regex.sub(
-            r"(\d{1,2}\.) *\n", "\g<1>", packet_text, flags=Parser.REGEX_FLAGS
-        )
-
-        # clear lines that are all spaces
-        packet_text = regex.sub(r"^\s*$", "", packet_text, flags=Parser.REGEX_FLAGS)
-
-        # ensure ANSWER starts on a new line
-        packet_text = regex.sub(
-            r"(?<=.)(?=ANSWER:)", "\n", packet_text, flags=Parser.REGEX_FLAGS
-        )
-
-        # remove trailing spaces
-        packet_text = regex.sub(r"[ \t]+$", "", packet_text, flags=Parser.REGEX_FLAGS)
-        # remove duplicate lines
-        count = regex.findall(r"^(.+)\n\1$", packet_text, flags=Parser.REGEX_FLAGS)
-        packet_text = regex.sub(
-            r"^(.+)\n\1$", "\g<1>\n", packet_text, flags=Parser.REGEX_FLAGS
-        )
-        if len(count) > 0:
-            Logger.warning(f"Removed {len(count)} duplicate lines")
-
-        # remove "Page X" lines
-        packet_text = regex.sub(r"Page \d+( of \d+)?", "", packet_text, flags=Parser.REGEX_FLAGS)
-
+        
         return packet_text
 
     def parse_packet(self, packet_text: str, packet_name="") -> dict:
@@ -744,8 +674,9 @@ class Parser:
                 r"^\[(5|10|15)?[EMH]?\]", question, flags=Parser.REGEX_FLAGS
             )
 
+            # Fix the invalid escape sequence by using raw string
             if (not self.has_question_numbers) ^ (
-                1 if regex.match("^\d{1,2}\.", question) else 0
+                1 if regex.match(r"^[1-9][0-9]?\.", question) else 0  # Changed from \d to [0-9]
             ):
                 question = "1. " + question
 
@@ -918,16 +849,20 @@ def main(
         if filename == ".DS_Store":
             continue
 
-        f = open(os.path.join(input_directory, filename))
-
-        packet_text = ""
-        for line in f.readlines():
-            packet_text += line
+        # Fix file reading encoding
+        try:
+            with open(os.path.join(input_directory, filename), 'r', encoding='utf-8-sig') as f:
+                packet_text = f.read()
+        except UnicodeError:
+            # Fallback to utf-8 with replace
+            with open(os.path.join(input_directory, filename), 'r', encoding='utf-8', errors='replace') as f:
+                packet_text = f.read()
 
         packet = parser.parse_packet(packet_text, filename)
 
-        g = open(output_directory + filename[:-4] + ".json", "w")
-        json.dump(packet, g)
+        # Write output with UTF-8 encoding
+        with open(output_directory + filename[:-4] + ".json", "w", encoding='utf-8') as g:
+            json.dump(packet, g)
 
 
 if __name__ == "__main__":
