@@ -795,6 +795,20 @@ class Parser:
     is_flag=True,
     help="Ensure powermarks are surrounded by spaces.",
 )
+@click.option(
+    "--has-question-numbers",
+    is_flag=True,
+    default=True,
+    show_default=True,
+    help="Specify that the packet has question numbers (e.g., 1., 2.).",
+)
+@click.option(
+    "--has-category-tags",
+    is_flag=True,
+    default=False,
+    show_default=True,
+    help="Specify that the packet has category tags (e.g., <Mythology>).",
+)
 def main(
     input_directory,
     output_directory,
@@ -806,6 +820,8 @@ def main(
     modaq,
     auto_insert_powermarks,
     space_powermarks,
+    has_question_numbers,
+    has_category_tags,
 ):
     if buzzpoints and modaq:
         Logger.error("Cannot output in both buzzpoints and MODAQ formats")
@@ -825,15 +841,15 @@ def main(
             )
             exit(0)
 
-    HAS_QUESTION_NUMBERS = input("Do you have question numbers? (y/n) ") == "y"
-    HAS_CATEGORY_TAGS = input("Do you have category tags? (y/n) ") == "y"
-    print("Using category tags" if HAS_CATEGORY_TAGS else "Using question classifier")
+    # HAS_QUESTION_NUMBERS = input("Do you have question numbers? (y/n) ") == "y"
+    # HAS_CATEGORY_TAGS = input("Do you have category tags? (y/n) ") == "y"
+    print("Using category tags" if has_category_tags else "Using question classifier")
 
     ########## END OF PROMPTS ##########
 
     parser = Parser(
-        HAS_QUESTION_NUMBERS,
-        HAS_CATEGORY_TAGS,
+        has_question_numbers,
+        has_category_tags,
         bonus_length,
         buzzpoints,
         modaq,

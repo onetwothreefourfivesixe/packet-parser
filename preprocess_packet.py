@@ -46,40 +46,45 @@ def extract_tossups(text: str) -> List[str]:
     return tossups
 
 def clean_packet(text: str) -> str:
-    """Clean and standardize packet formatting."""
-    
-    # Extract just the tossups
-    tossups = extract_tossups(text)
-    
-    if not tossups:
-        return text
-    
-    # Rebuild text with clean tossups only
-    clean_text = "{b}Tossups{/b}\n" + "\n\n".join(tossups)
-    
-    # Clean up formatting
-    clean_text = regex.sub(r'\s+', ' ', clean_text)  # Collapse whitespace
-    clean_text = regex.sub(r'\s*\n\s*', '\n', clean_text)  # Clean line endings
-    clean_text = regex.sub(r'\n{3,}', '\n\n', clean_text)  # Max double newlines
-    
-    return clean_text.strip()
+    """
+    Cleans the entire packet text by removing headers, footers, and standardizing formatting,
+    while preserving both tossups and bonuses.
+    """
+    # 1. Remove common header/footer patterns that appear anywhere in the file
+    header_footer_patterns = [
+        r'(?im)^.*?(?:page|round|packet|scholastic|scop|outreach|program|copyright|tournament).*?$\n',
+        r'(?im)^.*?(?:Brad Fischer|authors|written by|edited by).*?$\n',
+        r'(?im)^.*?(?:·|•).*?$\n', # Lines with bullets, often author lists
+    ]
+    for pattern in header_footer_patterns:
+        text = regex.sub(pattern, '', text)
+
+    # 2. Standardize question numbering to use parentheses, e.g., "1. " -> "1) "
+    text = regex.sub(r'(?m)^(\s*\d+)[\.]', r'\1)', text)
+
+    # 3. Clean up whitespace and line breaks
+    text = regex.sub(r'[ \t]+', ' ', text)  # Collapse multiple spaces/tabs into one
+    text = regex.sub(r'\n\s*\n+', '\n\n', text)  # Collapse multiple blank lines
+    text = text.strip()
+
+    return text
 
 def process_files(input_dir: str = 'packets', output_dir: str = 'packets_clean'):
-    """Process all packet files."""
+    """Processes all text files in the input directory and saves them to the output directory."""
     Path(output_dir).mkdir(exist_ok=True)
     
     for file_path in Path(input_dir).glob('*.txt'):
         print(f"Cleaning {file_path.name}...")
         
         try:
-            # Read with UTF-8 encoding
-            text = file_path.read_text(encoding='utf-8-sig')
+            # Read with UTF-8 encoding, which handles most special characters
+            text = file_path.read_text(encoding='utf-8-sig', errors='replace')
             clean_text = clean_packet(text)
             
-            # Write cleaned output
+            # Write cleaned output to the separate 'clean' directory
             output_path = Path(output_dir) / file_path.name
-            output_path.write_text(clean_text, encoding='utf-8-sig')
-            print(f"Successfully cleaned {file_path.name}")
+            output_path.write_text(clean_text, encoding='utf-8')
+            print(f"Successfully cleaned {file_path.name} -> {output_path}")
             
         except Exception as e:
             print(f"Error processing {file_path.name}: {e}")
