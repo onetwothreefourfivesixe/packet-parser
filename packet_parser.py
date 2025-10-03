@@ -4,6 +4,7 @@ import click
 import json
 import os
 import regex
+import unicodedata
 
 from bcolors import bcolors
 from classifier.classify import (
@@ -13,6 +14,7 @@ from classifier.classify import (
     SUBSUBCATEGORIES,
 )
 
+CONSTANT_CATEGORY = ""
 CONSTANT_SUBCATEGORY = ""
 # CONSTANT_ALTERNATE_SUBCATEGORY is optional,
 # and can be used even if CONSTANT_SUBCATEGORY is empty.
@@ -55,9 +57,8 @@ def get_subcategory(text: str) -> str:
         text = text[1:-1]
 
     text = text.lower()
-    text = text.replace("–", " ")
-    text = text.replace("—", " ")
-    text = text.replace("-", " ")
+    text = text.replace("–", " ").replace("—", " ").replace("-", " ")
+    text = text.replace("(", "").replace(")", "")
     text_split = regex.split(r"[\/,;:. ]", text)
 
     for subcat in STANDARDIZE_SUBCATS:
@@ -95,7 +96,7 @@ def get_alternate_subcategory(text: str) -> str:
     return ""
 
 
-def remove_formatting(text: str, include_italics=False):
+def remove_formatting(text: str, include_italics=False, sanitize_string=True):
     text = (
         text.replace("{b}", "")
         .replace("{/b}", "")
@@ -106,11 +107,34 @@ def remove_formatting(text: str, include_italics=False):
     if not include_italics:
         text = text.replace("{i}", "").replace("{/i}", "")
 
-    return text.strip()
+    text = text.strip()
+
+    if not sanitize_string:
+        return text
+
+    # Normalize to NFD (decompose characters)
+    s = unicodedata.normalize("NFD", text)
+    # Remove diacritics
+    s = regex.sub(r"[\u0300-\u036f]", "", s)
+    # Replace various unicode dashes with '-'
+    s = regex.sub(r"[\u2010-\u2015]", "-", s)
+    # Replace various unicode single quotes with "'"
+    s = regex.sub(r"[\u2018-\u201B]", "'", s)
+    # Replace various unicode double quotes with '"'
+    s = regex.sub(r"[\u201C-\u201F]", '"', s)
+    # Replace unicode ellipsis with '...'
+    s = regex.sub(r"[\u2026]", "...", s)
+    # Replace various unicode primes with "'"
+    s = regex.sub(r"[\u2032-\u2037]", "'", s)
+    # Remove interpuncts
+    s = regex.sub(r"[\u00B7\u22C5\u2027]", "", s)
+    # Replace ł with l
+    s = regex.sub(r"\u0142", "l", s)
+
+    return s
 
 
-def remove_punctuation(s: str, punctuation=r""".,!-;:'"/?@#$%^&*_~()[]{}""''"""):
-    """Fix escape sequence in punctuation string"""
+def remove_punctuation(s: str, punctuation=".,!-;:'\"\\/?@#$%^&*_~()[]{}“”‘’"):
     return "".join(ch for ch in s if ch not in punctuation)
 
 
@@ -138,6 +162,8 @@ class Parser:
         classify_unknown: bool,
         space_powermarks: bool,
         always_classify: bool = False,
+        no_question_underlining: bool = False,
+        constant_category: str = "",
         constant_subcategory: str = "",
         constant_alternate_subcategory: str = "",
     ) -> None:
@@ -151,6 +177,7 @@ class Parser:
         self.classify_unknown = classify_unknown
         self.space_powermarks = space_powermarks
         self.always_classify = always_classify
+        self.no_question_underlining = no_question_underlining
 
         self.tossup_index: int = 0
         """
@@ -161,21 +188,29 @@ class Parser:
         1-indexed
         """
 
+        if constant_category and constant_subcategory:
+            message = "Cannot use both a constant category and a constant subcategory."
+            raise ValueError(message)
+
         self.constant_subcategory = constant_subcategory
         self.constant_category = (
-            SUBCAT_TO_CAT[constant_subcategory] if constant_subcategory else ""
+            SUBCAT_TO_CAT[constant_subcategory]
+            if constant_subcategory
+            else constant_category
         )
         self.constant_alternate_subcategory = constant_alternate_subcategory
 
-        if not self.has_category_tags and not self.constant_subcategory == "":
-            Logger.warning(
-                f"Using fixed category {self.constant_category} and subcategory {self.constant_subcategory}"
-            )
+        if not self.has_category_tags and not self.constant_category == "":
+            message = f"Using fixed category {self.constant_category}"
+            Logger.warning(message)
+
+        elif not self.has_category_tags and not self.constant_subcategory == "":
+            message = f"Using fixed category {self.constant_category} and subcategory {self.constant_subcategory}"
+            Logger.warning(message)
 
         if self.constant_alternate_subcategory:
-            Logger.warning(
-                f"Using fixed alternate subcategory {self.constant_alternate_subcategory}"
-            )
+            message = f"Using fixed alternate subcategory {self.constant_alternate_subcategory}"
+            Logger.warning()
 
         self.__init_regex__()
 
@@ -191,9 +226,9 @@ class Parser:
             )
         elif self.has_question_numbers and self.has_category_tags:
             self.REGEX_QUESTION = r"^ *\d{1,2}\.(?:.|\n)*?ANSWER(?:.|\n)*?<[^>]*>"
-        # elif self.has_question_numbers:
-        #     # self.REGEX_QUESTION = r"^ *\d{1,2}\.(?:.|\n)*?ANSWER(?:.*\n)*?(?= *\d{1,2}\.)"
-        #     self.REGEX_QUESTION = r"\d{0,2}(?:[^\d\n].*\n)*[ \t]*ANSWER.*(?:\n.+)*?(?=\n\s*\d{1,2}|\n\s*$)"
+        elif self.has_question_numbers and not self.has_category_tags:
+            # self.REGEX_QUESTION = r"^ *\d{1,2}\.(?:.|\n)*?ANSWER(?:.*\n)*?(?= *\d{1,2}\.)"
+            self.REGEX_QUESTION = r"\d{0,2}(?:[^\d\n].*\n)*[ \t]*ANSWER.*(?:\n.+)*?(?=\n\s*\d{1,2}|\n\s*$)"
         else:
             self.REGEX_QUESTION = r"(?:[^\n].*\n)*[ \t]*ANSWER.*(?:\n.*)*?(?=\n$)"
 
@@ -253,6 +288,13 @@ class Parser:
             question_raw = "{b}" + question_raw[4:]
         elif question_raw.startswith("{i} "):
             question_raw = "{i}" + question_raw[4:]
+
+        if self.no_question_underlining:
+            if "{u}" in question_raw:
+                question_raw = question_raw.replace("{u}", "").replace("{/u}", "")
+                Logger.warning(
+                    f"Tossup {self.tossup_index} question text had underlining removed"
+                )
 
         question = format_text(question_raw, self.modaq)
         question_sanitized = remove_formatting(question_raw)
@@ -364,6 +406,13 @@ class Parser:
         elif leadin_raw.startswith("{i} "):
             leadin_raw = "{i}" + leadin_raw[4:]
 
+        if self.no_question_underlining:
+            if "{u}" in leadin_raw:
+                leadin_raw = leadin_raw.replace("{u}", "").replace("{/u}", "")
+                Logger.warning(
+                    f"Bonus {self.tossup_index} leadin text had underlining removed"
+                )
+
         leadin = format_text(leadin_raw, self.modaq)
         leadin_sanitized = remove_formatting(leadin_raw)
 
@@ -384,6 +433,15 @@ class Parser:
             exit(2)
 
         parts_raw = [part.replace("\n", " ").strip() for part in parts_raw]
+
+        if self.no_question_underlining:
+            for i, part in enumerate(parts_raw):
+                if "{u}" in part:
+                    parts_raw[i] = part.replace("{u}", "").replace("{/u}", "")
+                    Logger.warning(
+                        f"Bonus {self.bonus_index} part {i + 1} text had underlining removed"
+                    )
+
         parts = [format_text(part, self.modaq) for part in parts_raw]
         parts_sanitized = [remove_formatting(part) for part in parts_raw]
 
@@ -521,15 +579,16 @@ class Parser:
             exit(3)
 
         if not subcategory or (not self.has_category_tags and self.always_classify):
-            category, subcategory, temp_alternate_subcategory = classify_question(text)
+            category, subcategory, temp_alternate_subcategory = classify_question(
+                text, fixed_category=self.constant_category
+            )
 
             if self.has_category_tags and not alternate_subcategory:
                 Logger.warning(
                     f"{type} {index} classified as {category} - {subcategory}"
                 )
 
-            if not alternate_subcategory:
-                alternate_subcategory = temp_alternate_subcategory
+            alternate_subcategory = temp_alternate_subcategory
 
         if not alternate_subcategory and not self.modaq:
             if category in ALTERNATE_SUBCATEGORIES:
@@ -606,15 +665,79 @@ class Parser:
                     values.append(int(value))
                     break
 
+        if len(difficultyModifiers) == 3 and not set(difficultyModifiers) == set(
+            ["e", "m", "h"]
+        ):
+            message = f"Bonus {self.bonus_index} has difficulty modifiers {difficultyModifiers} but should be e, m, h"
+            Logger.warning(message)
+
         if len(values) == 0 and (self.modaq or self.buzzpoints):
             values = [10 for _ in range(len(tags))]
+
+        if (
+            len(difficultyModifiers) > 0
+            and len(values) > 0
+            and not len(values) == len(difficultyModifiers)
+        ):
+            message = f"Bonus {self.bonus_index} has {len(difficultyModifiers)} difficulty modifiers but {len(values)} values"
+            Logger.warning(message)
 
         return difficultyModifiers, values
 
     def preprocess_packet(self, packet_text: str) -> str:
-        """Preprocess packet text with proper regex patterns."""
-        
-        # Fix numbered question formatting
+        if self.modaq:
+            packet_text = packet_text.replace('"', "\u0022")
+
+        # remove spaces before first non-space character
+        packet_text = regex.sub(r"^ +", "", packet_text, flags=Parser.REGEX_FLAGS)
+
+        packet_text = packet_text + "\n0."
+        # remove zero-width characters
+        packet_text = packet_text.replace("", "").replace("​", "")
+        # change soft hyphens to regular hyphens
+        packet_text = packet_text.replace("\xad", "-")
+        # change greek question mark to semicolon
+        packet_text = packet_text.replace("\u037e", ";")  # Greek question mark
+
+        packet_text = (
+            packet_text.replace("\u00a0", " ")
+            .replace(" {/bu}", "{/bu} ")
+            .replace(" {/u}", "{/u} ")
+            .replace(" {/i}", "{/i} ")
+            .replace("{i}\n{/i}", "\n")
+            .replace("{i} {/i}", " ")
+            .replace("\n10]", "[10]")
+            .replace("[5,5]", "[10]")
+            .replace("[5/5]", "[10]")
+            .replace("[5, 5]", "[10]")
+            .replace("[5,5,5,5]", "[20]")
+            .replace("[5/5/5/5]", "[20]")
+            .replace("[10/10]", "[20]")
+            .replace("[2x10]", "[20]")
+            .replace("[2x5]", "[10]")
+            .replace("[10 ", "[10] ")
+            .replace("AUDIO RELATED BONUS: ", "\n")
+            .replace("HANDOUT RELATED BONUS: ", "\n")
+            .replace("RELATED BONUS: ", "\n")
+            .replace("RELATED BONUS. ", "\n")
+            .replace("RELATED BONUS\n", "\n\n")
+            .replace("HANDOUT BONUS: ", "\n")
+            .replace("BONUS: ", "\n")
+            .replace("Bonus: ", "\n")
+            .replace("BONUS. ", "\n")
+            .replace("TOSSUP. ", "")
+        )
+        # .replace("\n(10)", "\n[10]")
+
+        for typo in ANSWER_TYPOS:
+            packet_text = packet_text.replace(typo, "ANSWER:")
+            packet_text = packet_text.replace(typo.title(), "ANSWER:")
+
+        # replace tabs, non-breaking spaces (nbsp), and redundant spaces
+        packet_text = packet_text.replace("\t", " ").replace("\xa0", " ")
+        packet_text = regex.sub(r" {2,}", " ", packet_text, flags=Parser.REGEX_FLAGS)
+
+        # remove redundant tags
         packet_text = regex.sub(
             r"^{(bu|b|u|i)}(\d{1,2}|TB|X)\.",
             r"1. {\1}",
@@ -624,16 +747,16 @@ class Parser:
         
         # Fix answer formatting
         packet_text = regex.sub(
-            r"^{(bu|b|u|i)}ANSWER(:?)",
-            r"ANSWER\2{\1}",
+            r"^\{(bu|b|u|i)\}(\d{1,2}|TB|X)\.",
+            r"1. {\g<1>}",
             packet_text,
             flags=Parser.REGEX_FLAGS
         )
         
         # Fix question number line breaks
         packet_text = regex.sub(
-            r"(\d{1,2}\.) *\n",
-            r"\1",
+            r"^\{(bu|b|u|i)\}ANSWER(:?)",
+            r"ANSWER\g<2>{\g<1>}",
             packet_text,
             flags=Parser.REGEX_FLAGS
         )
@@ -648,12 +771,40 @@ class Parser:
         
         # Fix digit matching
         packet_text = regex.sub(
-            r"^([1-9][0-9]?)\.",
-            r"\1.",
-            packet_text,
-            flags=Parser.REGEX_FLAGS
+            r"^[ABC][.:] *", "[10] ", packet_text, flags=Parser.REGEX_FLAGS
         )
-        
+        packet_text = regex.sub(
+            r"^BS\d{1,2}[\.:]?", "21.", packet_text, flags=Parser.REGEX_FLAGS
+        )
+
+        # handle question number on a new line from the question text
+        packet_text = regex.sub(
+            r"(\d{1,2}\.) *\n", r"\g<1>", packet_text, flags=Parser.REGEX_FLAGS
+        )
+
+        # clear lines that are all spaces
+        packet_text = regex.sub(r"^\s*$", "", packet_text, flags=Parser.REGEX_FLAGS)
+
+        # ensure ANSWER starts on a new line
+        packet_text = regex.sub(
+            r"(?<=.)(?=ANSWER:)", "\n", packet_text, flags=Parser.REGEX_FLAGS
+        )
+
+        # remove trailing spaces
+        packet_text = regex.sub(r"[ \t]+$", "", packet_text, flags=Parser.REGEX_FLAGS)
+        # remove duplicate lines
+        count = regex.findall(r"^(.+)\n\1$", packet_text, flags=Parser.REGEX_FLAGS)
+        packet_text = regex.sub(
+            r"^(.+)\n\1$", r"\g<1>\n", packet_text, flags=Parser.REGEX_FLAGS
+        )
+        if len(count) > 0:
+            Logger.warning(f"Removed {len(count)} duplicate lines")
+
+        # remove "Page X" lines
+        packet_text = regex.sub(
+            r"Page \d+( of \d+)?", "", packet_text, flags=Parser.REGEX_FLAGS
+        )
+
         return packet_text
 
     def parse_packet(self, packet_text: str, packet_name="") -> dict:
@@ -676,7 +827,7 @@ class Parser:
 
             # Fix the invalid escape sequence by using raw string
             if (not self.has_question_numbers) ^ (
-                1 if regex.match(r"^[1-9][0-9]?\.", question) else 0  # Changed from \d to [0-9]
+                1 if regex.match(r"^\d{1,2}\.", question) else 0
             ):
                 question = "1. " + question
 
@@ -796,18 +947,10 @@ class Parser:
     help="Ensure powermarks are surrounded by spaces.",
 )
 @click.option(
-    "--has-question-numbers",
+    "-u",
+    "--no-question-underlining",
     is_flag=True,
-    default=True,
-    show_default=True,
-    help="Specify that the packet has question numbers (e.g., 1., 2.).",
-)
-@click.option(
-    "--has-category-tags",
-    is_flag=True,
-    default=False,
-    show_default=True,
-    help="Specify that the packet has category tags (e.g., <Mythology>).",
+    help="Detect and remove underlining from (non-answer) question text.",
 )
 def main(
     input_directory,
@@ -820,8 +963,7 @@ def main(
     modaq,
     auto_insert_powermarks,
     space_powermarks,
-    has_question_numbers,
-    has_category_tags,
+    no_question_underlining,
 ):
     if buzzpoints and modaq:
         Logger.error("Cannot output in both buzzpoints and MODAQ formats")
@@ -857,6 +999,8 @@ def main(
         classify_unknown,
         space_powermarks,
         always_classify,
+        no_question_underlining,
+        CONSTANT_CATEGORY,
         CONSTANT_SUBCATEGORY,
         CONSTANT_ALTERNATE_SUBCATEGORY,
     )
